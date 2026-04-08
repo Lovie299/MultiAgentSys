@@ -1,0 +1,56 @@
+# docker-compose.yml — Local development environment
+#
+# Runs two services side-by-side:
+#
+#   backend  — Django + Uvicorn on port 8000
+#              Hot-reloads when you edit Python files (via volume mount)
+#
+#   frontend — Vite dev server on port 5173
+#              Hot-reloads when you edit React files (via volume mount)
+#              Proxies /api/* to the backend (configured in vite.config.js)
+#
+# Usage:
+#   docker compose up          — start both services
+#   docker compose up backend  — start only Django
+#   docker compose down        — stop and remove containers
+#
+# For a production-like single-container build, use the Dockerfile directly:
+#   docker build -t freemad .
+#   docker run -p 8000:8000 --env-file .env freemad
+
+services:
+
+  # ── Django backend ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      # Use a dev-specific Dockerfile target (Stage 2 only, no React build)
+      # For simplicity we just use the full Dockerfile here. The frontend_build/
+      # folder may be empty during dev — the Django API still works fine.
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env                      # loads all your API keys and config
+    volumes:
+      # Mount source code so changes reflect without rebuilding the image
+      - ./backend:/app
+    command: >
+      uvicorn config.asgi:application
+      --host 0.0.0.0
+      --port 8000
+      --reload                    # auto-restart on Python file changes
+
+  # ── Vite dev server ──────────────────────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    working_dir: /frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/frontend       # mount source for hot module replacement
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    # --host 0.0.0.0 makes Vite listen on all interfaces inside the container
+    # so you can access it from the host at http://localhost:5173
+    depends_on:
+      - backend                    # wait for backend to start first

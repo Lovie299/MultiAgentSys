@@ -1,0 +1,53 @@
+# render.yaml — Render deployment configuration
+#
+# This file lets Render auto-configure your web service when you connect
+# your GitHub repo. Go to https://dashboard.render.com → New → Web Service
+# → connect your repo and Render picks this file up automatically.
+#
+# Docs: https://render.com/docs/render-yaml-reference
+
+services:
+  - type: web
+    name: freemad-app
+    runtime: docker         # tells Render to use your Dockerfile
+    dockerfilePath: ./Dockerfile
+
+    # The port your app listens on inside the container.
+    # Must match the EXPOSE and CMD in your Dockerfile.
+    port: 8000
+
+    # Render injects these as real environment variables at runtime.
+    # Set their VALUES in the Render dashboard under Environment Variables
+    # (do NOT put secrets in this file — it gets committed to git).
+    envVars:
+      - key: DEBUG
+        value: "False"              # always False in production
+
+      - key: DJANGO_SECRET_KEY
+        generateValue: true         # Render auto-generates a secure random string
+
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com"      # allows any *.onrender.com subdomain
+
+      - key: MODEL_PROVIDER
+        sync: false                 # set this manually in the Render dashboard
+
+      - key: GEN_MODEL_NAME
+        sync: false                 # set this manually in the Render dashboard
+
+      - key: GOOGLE_API_KEY
+        sync: false                 # set this manually in the Render dashboard
+
+      - key: EMB_MODEL_NAME
+        value: "all-MiniLM-L6-v2"
+
+      - key: N_AGENTS
+        value: "3"
+
+      - key: R_ROUNDS
+        value: "2"
+
+    # Render's free tier spins down after 15 minutes of inactivity.
+    # The first request after spin-down takes ~30 seconds to respond.
+    # This is fine for a school project — just warn your marker.
+    plan: free

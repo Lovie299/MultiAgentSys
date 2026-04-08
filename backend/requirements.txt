@@ -1,0 +1,20 @@
+# backend/requirements.txt
+# Pin major versions so the build is reproducible.
+# Run:  pip install -r requirements.txt
+
+# ── Web framework ──────────────────────────────────────────────────────────
+django>=4.2,<5.0           # Stable LTS — async views, StreamingHttpResponse
+uvicorn[standard]>=0.29    # ASGI server (replaces gunicorn for async code)
+whitenoise>=6.6            # Serves React static files directly from Django
+django-cors-headers>=4.3   # Allows Vite dev server to call Django API
+
+# ── AI / Agent stack ───────────────────────────────────────────────────────
+google-adk>=0.1            # Google Agent Development Kit
+litellm>=1.40              # Universal LLM router (OpenAI, Ollama, HuggingFace…)
+google-generativeai        # Required by google-adk for Gemini
+sentence-transformers>=2.7 # Local embedding models (similarity scoring)
+torch>=2.2                 # Required by sentence-transformers
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+python-dotenv>=1.0         # Loads .env into os.environ
+requests>=2.31             # HTTP client (used by litellm and utilities)
