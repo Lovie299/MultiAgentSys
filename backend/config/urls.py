@@ -23,3 +23,13 @@ urlpatterns = [
     path("", frontend),          # matches "/"
     path("<path:path>", frontend),  # matches everything else
 ]
+# from django.urls import path, include, re_path
+# from chat.views import frontend
+
+# urlpatterns = [
+#     # API
+#     path("api/", include("chat.urls")),
+
+#     # React SPA (safe catch-all)
+#     re_path(r"^(?!api/).*", frontend),
+# ]

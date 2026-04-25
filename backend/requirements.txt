@@ -18,3 +18,9 @@ torch>=2.2                 # Required by sentence-transformers
 # ── Utilities ──────────────────────────────────────────────────────────────
 python-dotenv>=1.0         # Loads .env into os.environ
 requests>=2.31             # HTTP client (used by litellm and utilities)
+
+Django>=4.0
+ollama
+scikit-learn  # Add this for TF-IDF matching (optional but recommended)
+
+ollama pull gemma3:27b-cloud
