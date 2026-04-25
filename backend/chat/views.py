@@ -1,7 +1,6 @@
 import json
 import logging
 import uuid
-import asyncio
 import os
 
 from pathlib import Path
@@ -10,19 +9,16 @@ from django.conf import settings
 from django.http import StreamingHttpResponse, JsonResponse, FileResponse
 from django.views.decorators.csrf import csrf_exempt
 
-from asgiref.sync import async_to_sync
-
 from .freemad.agent import run_freemad_protocol
 
 logger = logging.getLogger(__name__)
 
-os.environ["GOOGLE_API_KEY"] = "AIzaSyAvXM3NaC893IbPHnFAkFRuQG0TA9AY698"
-
 
 @csrf_exempt
-def chat_stream(request):   # ⚠️ NOTE: this is NOW sync
+async def chat_stream(request):
     """
-    Proper async SSE handling in Django.
+    Async SSE endpoint. Django 4.2 + Uvicorn (ASGI) support async views
+    natively — no manual event-loop bridging needed.
     """
 
     if request.method != "POST":
@@ -44,10 +40,7 @@ def chat_stream(request):   # ⚠️ NOTE: this is NOW sync
 
     user_id = str(uuid.uuid4())
 
-    # ─────────────────────────────────────────────────────────────
-    # 🔥 KEY PART: async generator
-    # ─────────────────────────────────────────────────────────────
-    async def async_event_generator():
+    async def event_generator():
         try:
             async for update in run_freemad_protocol(
                 user_message, guiding_prompt, user_id
@@ -55,32 +48,14 @@ def chat_stream(request):   # ⚠️ NOTE: this is NOW sync
                 yield f"data: {json.dumps(update)}\n\n"
 
         except Exception as e:
-            logger.exception("Error in async generator")
+            logger.exception("Error in event generator")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         finally:
             yield "data: [DONE]\n\n"
 
-    # ─────────────────────────────────────────────────────────────
-    # 🔥 BRIDGE async → sync (THIS FIXES YOUR ERROR)
-    # ─────────────────────────────────────────────────────────────
-    def sync_event_generator():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async_gen = async_event_generator()
-
-        try:
-            while True:
-                chunk = loop.run_until_complete(async_gen.__anext__())
-                yield chunk
-        except StopAsyncIteration:
-            pass
-        finally:
-            loop.close()
-
     response = StreamingHttpResponse(
-        sync_event_generator(),
+        event_generator(),
         content_type="text/event-stream",
     )
 

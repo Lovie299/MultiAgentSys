@@ -12,8 +12,8 @@
 // In production (Docker / Render) there is only one server — Django
 // on port 8000 — so the proxy is irrelevant.
 
-import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
@@ -23,9 +23,10 @@ export default defineConfig({
 
     proxy: {
       // Forward /api/* requests to the Django backend during development.
-      // Change the target port if Django is running on a different port.
+      // When running via docker-compose, use the service name "backend" as the host.
+      // When running outside Docker (npm run dev locally), change this to http://localhost:8000.
       "/api": {
-        target: "http://localhost:8000",
+        target: "http://backend:8000",
         changeOrigin: true,   // rewrites the Host header to match the target
         secure: false,        // allow self-signed certs if testing with HTTPS locally
       },
