@@ -1,12 +1,14 @@
 """
 agent.py — FreeMAD Multi-Agent Debate Protocol (Improved Version)
+With Mother Dataset Integration for Grounded Maternal Health Responses
 
 Key upgrades:
 - Stronger prompts (real debate)
 - Hidden Chain-of-Thought (internal reasoning)
 - Judge agent (final synthesis)
 - Cleaner scoring
-- Fully commented for learning
+- FULLY COMMENTED for learning
+- ✅ Mother Dataset grounding for evidence-based responses
 """
 
 import asyncio
@@ -26,6 +28,114 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from asyncio import CancelledError
+
+# ─────────────────────────────────────────────────────────────
+# 🆕 MOTHER DATASET INTEGRATION
+# ─────────────────────────────────────────────────────────────
+from pathlib import Path
+import json
+
+class MotherDataset:
+    """
+    Loads and queries the Mother maternal health dataset.
+    Provides grounded medical answers for agent debates.
+    """
+    def __init__(self, data_path: str = "data/"):
+        # Look for data folder relative to this file
+        base_dir = Path(__file__).parent.parent
+        data_dir = base_dir / data_path
+        
+        qa_file = data_dir / "mother_question_and_answer_pairs_data.json"
+        
+        if not qa_file.exists():
+            print(f"⚠️ Warning: Could not find {qa_file}. Dataset grounding disabled.")
+            self.qa_pairs = []
+            return
+        
+        with open(qa_file, 'r', encoding='utf-8') as f:
+            self.qa_pairs = json.load(f)
+        
+        print(f"✅ Loaded {len(self.qa_pairs)} validated Q&A pairs from Mother dataset")
+    
+    def find_best_match(self, user_question: str) -> dict:
+        """
+        Find the closest matching question in the dataset.
+        Uses simple keyword overlap for speed.
+        """
+        if not self.qa_pairs:
+            return {"found": False, "answer": None, "confidence": 0}
+        
+        user_words = set(user_question.lower().split())
+        
+        best_match = None
+        best_score = 0
+        
+        for item in self.qa_pairs:
+            question_words = set(item["question"].lower().split())
+            # Calculate overlap score
+            overlap = len(user_words & question_words)
+            score = overlap / max(len(user_words), len(question_words), 1)
+            
+            if score > best_score and score > 0.15:  # 15% threshold
+                best_score = score
+                best_match = item
+        
+        if best_match:
+            return {
+                "found": True,
+                "answer": best_match["answer"],
+                "matched_question": best_match["question"],
+                "confidence": best_score
+            }
+        
+        return {"found": False, "answer": None, "confidence": 0}
+    
+    def get_grounding_prompt(self, user_question: str) -> str:
+        """
+        Returns a prompt segment to inject into agent instructions.
+        """
+        match = self.find_best_match(user_question)
+        
+        if match["found"]:
+            return f"""
+╔══════════════════════════════════════════════════════════════╗
+║  📋 VERIFIED MEDICAL DATA (Mother Dataset)                   ║
+╠══════════════════════════════════════════════════════════════╣
+║  Question matched: {match['matched_question']}
+║  Confidence: {match['confidence']:.2f}
+║  ═══════════════════════════════════════════════════════════
+║  Verified Answer:
+║  {match['answer']}
+║  ═══════════════════════════════════════════════════════════
+║  ⚠️ You MUST base your response on this verified data.
+║  Do NOT add medical advice not present above.
+╚══════════════════════════════════════════════════════════════╝
+"""
+        else:
+            return """
+╔══════════════════════════════════════════════════════════════╗
+║  ⚠️ NOT IN VERIFIED DATASET                                   ║
+╠══════════════════════════════════════════════════════════════╣
+║  This specific question was not found in the Mother dataset.
+║  Answer using general medical knowledge but INCLUDE:
+║  "⚠️ This information is based on general knowledge.
+║   Please consult a healthcare provider for medical advice."
+╚══════════════════════════════════════════════════════════════╝
+"""
+    
+    def get_disclaimer(self) -> str:
+        return "⚠️ This information comes from a clinically validated dataset but does not replace professional medical advice. Please consult a healthcare provider."
+
+
+# Initialize the Mother Dataset (global singleton)
+_mother_dataset = None
+
+def get_mother_dataset():
+    global _mother_dataset
+    if _mother_dataset is None:
+        _mother_dataset = MotherDataset()
+    return _mother_dataset
+
 
 # ─────────────────────────────────────────────────────────────
 # 🔧 ENVIRONMENT SETUP
@@ -89,6 +199,7 @@ class FreeMADState(TypedDict):
     responses: Dict[int, Dict[str, str]]
     scores: Dict[str, float]
     final_decision: Optional[str]
+    dataset_match: Optional[dict]  # 🆕 Track dataset grounding
 
 
 # Session manager (keeps conversation memory)
@@ -96,48 +207,126 @@ session_service = InMemorySessionService()
 
 
 # ─────────────────────────────────────────────────────────────
-# 🤖 BUILD DEBATER AGENTS
+# 🤖 BUILD DEBATER AGENTS (WITH DATASET GROUNDING)
 # Each agent has the SAME model but DIFFERENT role behavior
 # ─────────────────────────────────────────────────────────────
-def build_debaters():
+def build_debaters(user_question: str = ""):
+    """
+    Builds debater agents with dataset grounding injected into instructions.
+    """
     model = get_model()
+    dataset = get_mother_dataset()
+    
+    # Get grounding prompt for this specific question
+    grounding_prompt = dataset.get_grounding_prompt(user_question)
+    disclaimer = dataset.get_disclaimer()
+    
     agents = []
-
+    
+    # Define different perspectives for each agent
+    agent_perspectives = [
+        {
+            "name_suffix": "Evidence-Based",
+            "focus": "Focus STRICTLY on the verified dataset answer. Defend it against other perspectives."
+        },
+        {
+            "name_suffix": "Safety-First",
+            "focus": "Focus on patient safety. Critique if the dataset answer lacks warnings or disclaimers."
+        },
+        {
+            "name_suffix": "Holistic",
+            "focus": "Synthesize the dataset answer with practical, empathetic advice for the mother."
+        }
+    ]
+    
     for i in range(N_AGENTS):
+        perspective = agent_perspectives[i % len(agent_perspectives)]
+        
+        # Enhanced instruction with dataset grounding
+        instruction = f"""
+{grounding_prompt}
+
+You are Debater {i+1} - The {perspective['name_suffix']} Perspective.
+
+YOUR ROLE: {perspective['focus']}
+
+DEBATE RULES:
+1. Think step-by-step internally but DO NOT show full reasoning.
+2. Provide:
+   - A short reasoning summary (2-3 sentences)
+   - A final answer clearly labeled "FINAL ANSWER:"
+3. Be concise but medically accurate.
+4. You are allowed to disagree with other debaters.
+5. If the dataset provided a verified answer, you MUST prioritize it.
+6. {disclaimer}
+
+Remember: Your goal is to provide the BEST possible answer for the expectant mother.
+"""
+        
         agents.append(
             Agent(
-                name=f"debater_{i+1}",
+                name=f"debater_{i+1}_{perspective['name_suffix']}",
                 model=model,
-                instruction=(
-                    "You are a debater in a multi-agent system.\n"
-                    "Think step-by-step internally but DO NOT show full reasoning.\n"
-                    "Provide:\n"
-                    "1. A short reasoning summary\n"
-                    "2. A final answer\n\n"
-                    "Rules:\n"
-                    "- Be concise\n"
-                    "- Provide a UNIQUE perspective\n"
-                    "- You are allowed to disagree with others\n"
-                ),
+                instruction=instruction,
             )
         )
     return agents
 
 
 # ─────────────────────────────────────────────────────────────
-# ⚖️ BUILD JUDGE AGENT (NEW)
-# This agent decides the final best answer
+# ⚖️ BUILD JUDGE AGENT (WITH DATASET AS SOURCE OF TRUTH)
+# This agent decides the final best answer using Chain-of-Thought
 # ─────────────────────────────────────────────────────────────
-def build_judge():
+def build_judge(user_question: str = ""):
+    dataset = get_mother_dataset()
+    match = dataset.find_best_match(user_question)
+    
+    if match["found"]:
+        ground_truth_section = f"""
+╔══════════════════════════════════════════════════════════════╗
+║  ⚖️ SOURCE OF TRUTH (Mother Dataset)                        ║
+╠══════════════════════════════════════════════════════════════╣
+║  Question: {match['matched_question']}
+║  Verified Answer: {match['answer']}
+║  Confidence: {match['confidence']:.2f}
+║  ═══════════════════════════════════════════════════════════
+║  Use this as your gold standard for evaluating responses.
+╚══════════════════════════════════════════════════════════════╝
+"""
+    else:
+        ground_truth_section = """
+╔══════════════════════════════════════════════════════════════╗
+║  ⚠️ NO DATASET MATCH FOUND                                   ║
+╠══════════════════════════════════════════════════════════════╣
+║  This question was not in the verified dataset.
+║  Evaluate based on medical accuracy and safety.
+║  Require all responses to include a medical disclaimer.
+╚══════════════════════════════════════════════════════════════╝
+"""
+    
+    judge_instruction = f"""
+{ground_truth_section}
+
+You are the JUDGE in a multi-agent maternal health debate.
+
+YOUR CHAIN-OF-THOUGHT EVALUATION (internal):
+1. FACTUAL ACCURACY: Which debater's answer best matches the dataset (if available)?
+2. COMPLETENESS: Did any debater miss critical information?
+3. SAFETY: Were proper disclaimers included? Any potentially harmful advice?
+4. EMPATHY: Which answer would be most helpful for an expectant mother?
+
+YOUR RESPONSE FORMAT:
+[BRIEF ANALYSIS] - 2-3 sentences explaining your reasoning
+[FINAL ANSWER] - The synthesized best answer for the mother
+[DISCLAIMER] - Include the medical disclaimer
+
+Keep it concise but thorough.
+"""
+    
     return Agent(
         name="judge",
         model=get_model(),
-        instruction=(
-            "You are a judge in a multi-agent debate.\n"
-            "1. Briefly compare the responses\n"
-            "2. Then provide a FINAL ANSWER clearly labeled\n"
-            "Keep it concise.\n"
-        ),
+        instruction=judge_instruction,
     )
 
 
@@ -194,7 +383,7 @@ def calculate_similarity(a, b):
 
 
 # ─────────────────────────────────────────────────────────────
-# 🚀 MAIN FREE MAD PROTOCOL
+# 🚀 MAIN FREE MAD PROTOCOL (WITH DATASET GROUNDING)
 # This is what your Django view calls
 # ─────────────────────────────────────────────────────────────
 async def run_freemad_protocol(
@@ -204,6 +393,22 @@ async def run_freemad_protocol(
 ) -> AsyncGenerator[dict, None]:
 
     logger.info(f"Starting debate: {query}")
+    
+    # 🆕 Check dataset match first
+    dataset = get_mother_dataset()
+    dataset_match = dataset.find_best_match(query)
+    
+    if dataset_match["found"]:
+        logger.info(f"✅ Dataset match found (confidence: {dataset_match['confidence']:.2f})")
+        yield {
+            "type": "dataset_info",
+            "found": True,
+            "matched_question": dataset_match["matched_question"],
+            "confidence": dataset_match["confidence"]
+        }
+    else:
+        logger.info("⚠️ No dataset match found")
+        yield {"type": "dataset_info", "found": False}
 
     state: FreeMADState = {
         "query": query,
@@ -212,9 +417,11 @@ async def run_freemad_protocol(
         "responses": {},
         "scores": {},
         "final_decision": None,
+        "dataset_match": dataset_match,  # 🆕 Store dataset match
     }
 
-    debaters = build_debaters()
+    # 🆕 Build debaters with the specific question (so they get grounding)
+    debaters = build_debaters(query)
 
     try:
         # ─────────────── DEBATE ROUNDS ───────────────
@@ -228,14 +435,20 @@ async def run_freemad_protocol(
 
                 # 🧠 FIRST ROUND (no peer input)
                 if k == 0:
+                    # 🆕 Enhanced prompt with dataset grounding
+                    grounding = dataset.get_grounding_prompt(query)
                     prompt = f"""
-Question:
+{grounding}
+
+QUESTION:
 {query}
 
-Instructions:
-- Give a clear answer
+INSTRUCTIONS:
+- Give a clear, medically accurate answer
 - Be concise
-- Provide a UNIQUE perspective
+- Provide a UNIQUE perspective based on your role
+- If dataset provided an answer, prioritize it
+- Include the medical disclaimer
 """
                 else:
                     # 🧠 LATER ROUNDS (with peer critique)
@@ -243,18 +456,23 @@ Instructions:
                     peers = "\n".join(
                         f"{n}: {r}" for n, r in prev.items() if n != agent.name
                     )
-
+                    
+                    grounding = dataset.get_grounding_prompt(query)
+                    
                     prompt = f"""
-Question:
+{grounding}
+
+QUESTION:
 {query}
 
-Peer responses:
+PEER RESPONSES:
 {peers}
 
-Instructions:
-- Critique peer answers
-- Point out weaknesses
-- Improve your answer
+INSTRUCTIONS:
+- Critique peer answers based on the dataset (if available)
+- Point out weaknesses, missing disclaimers, or inaccuracies
+- Improve your answer based on this critique
+- Be respectful but firm
 """
 
                 runner = Runner(
@@ -275,7 +493,7 @@ Instructions:
                         timeout=60,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("Timeout")
+                    logger.warning(f"Timeout for {agent.name}")
                     continue
 
                 if not response:
@@ -295,25 +513,44 @@ Instructions:
                 # Simple scoring (reward uniqueness)
                 state["scores"][response] = state["scores"].get(response, 0) + 1
 
-        # ─────────────── JUDGE PHASE (NEW) ───────────────
-        yield {"type": "progress", "message": "Judging final answer..."}
+        # ─────────────── JUDGE PHASE (WITH DATASET AS SOURCE OF TRUTH) ───────────────
+        yield {"type": "progress", "message": "Judge evaluating final answer..."}
 
-        judge = build_judge()
+        judge = build_judge(query)  # 🆕 Pass query for dataset grounding
 
         all_responses = "\n".join(
-            f"{agent}: {resp}"
+            f"=== {agent} ===\n{resp}\n"
             for round_responses in state["responses"].values()
             for agent, resp in round_responses.items()
         )
+        
+        # 🆕 Include dataset info in judge prompt
+        dataset_section = ""
+        if dataset_match["found"]:
+            dataset_section = f"""
+DATASET VERIFIED ANSWER (use as gold standard):
+"{dataset_match['answer']}"
+"""
 
         judge_prompt = f"""
-Question:
+{dataset_section}
+
+QUESTION:
 {query}
 
-All responses:
+ALL DEBATER RESPONSES:
 {all_responses}
 
-Choose the best answer or combine them.
+INSTRUCTIONS:
+1. Compare each response against the dataset (if available)
+2. Identify the most accurate, complete, and safe answer
+3. Synthesize the best elements into a final answer
+4. Output in this format:
+   [ANALYSIS] - Your reasoning
+   [FINAL ANSWER] - The best answer for the mother
+   [DISCLAIMER] - Medical disclaimer
+
+{dataset.get_disclaimer()}
 """
 
         runner = Runner(
@@ -329,7 +566,11 @@ Choose the best answer or combine them.
 
         final = await run_session(runner, content, f"{user_id}_judge")
 
-        yield {"type": "final", "message": final}
+        if final:
+            state["final_decision"] = final
+            yield {"type": "final", "message": final}
+        else:
+            yield {"type": "error", "message": "Judge failed to produce a response"}
 
     # ─────────────── ERROR HANDLING ───────────────
     except CancelledError:
@@ -341,5 +582,5 @@ Choose the best answer or combine them.
         return
 
     except Exception as e:
-        logger.exception("Error")
+        logger.exception("Error in debate protocol")
         yield {"type": "error", "message": str(e)}

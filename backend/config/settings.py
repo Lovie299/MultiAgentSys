@@ -55,7 +55,8 @@ ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(
 INSTALLED_APPS = [
     "django.contrib.staticfiles",   # needed for collectstatic
     "corsheaders",                  # django-cors-headers: allow React dev server
-    "chat",                         # our app with views.py + freemad/agent.py
+    "chat", 
+    "gunicorn",
 ]
 
 # No auth, admin, sessions, or messages apps are needed for this API-only
